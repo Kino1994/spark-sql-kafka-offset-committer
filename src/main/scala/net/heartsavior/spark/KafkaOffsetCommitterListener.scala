@@ -24,6 +24,7 @@ import org.apache.kafka.clients.consumer.{KafkaConsumer, OffsetAndMetadata}
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.connector.read.streaming.SparkDataStream
 import org.apache.spark.sql.execution.streaming.{StreamExecution, StreamingQueryWrapper}
 import org.apache.spark.sql.kafka010.KafkaSourceInspector
 import org.apache.spark.sql.streaming.StreamingQueryListener
@@ -37,38 +38,64 @@ class KafkaOffsetCommitterListener extends StreamingQueryListener with Logging {
   override def onQueryProgress(event: StreamingQueryListener.QueryProgressEvent): Unit = {
     val query = SparkSession.active.streams.get(event.progress.id)
     if (query != null) {
-      val exec = query match {
-        case query: StreamingQueryWrapper => Option(query.streamingQuery.lastExecution)
-        case query: StreamExecution => Option(query.lastExecution)
+      val streamExecOpt: Option[StreamExecution] = query match {
+        case wrapper: StreamingQueryWrapper => Option(wrapper.streamingQuery)
+        case se: StreamExecution => Option(se)
         case _ =>
           logWarning(s"Unexpected type of streaming query: ${query.getClass}")
           None
       }
 
-      exec.foreach { ex =>
-        val inspector = new KafkaSourceInspector(ex.executedPlan)
-        val idxToKafkaParams = inspector.populateKafkaParams
-        idxToKafkaParams.foreach { case (idx, params) =>
-          params.get(CONFIG_KEY_GROUP_ID) match {
-            case Some(groupId) =>
-              val sourceProgress = event.progress.sources(idx)
-              val tpToOffsets = inspector.partitionOffsets(sourceProgress.endOffset)
+      streamExecOpt.foreach { streamExec =>
+        val ex = streamExec.lastExecution
+        if (ex != null) {
+          // Build a `SparkDataStream -> source-progress index` map from
+          // `streamExec.sources`. The order of that list matches the order of
+          // `event.progress.sources`, but the executed plan only contains scans
+          // for the sources that have new data in the current micro-batch, so
+          // matching by leaf position is unsafe — we have to match by stream
+          // identity instead. `StreamExecution.sources` is `protected` in Scala
+          // (subclass-only), so we have to read it via reflection. The per-leaf
+          // stream lookup itself is typed and lives in
+          // KafkaSourceInspector.populateKafkaParams.
+          val sourcesOpt =
+            ReflectionHelper.reflectFieldWithContextClassloader[Seq[SparkDataStream]](
+              streamExec, "sources")
+          val streamToProgressIdx: Map[SparkDataStream, Int] =
+            sourcesOpt.map(_.zipWithIndex.toMap).getOrElse(Map.empty)
 
-              val newParams = new scala.collection.mutable.HashMap[String, Object]
-              newParams ++= params
-              newParams += "group.id" -> groupId
+          val inspector = new KafkaSourceInspector(ex.executedPlan)
+          inspector.populateKafkaParams.foreach { case (streamOpt, params) =>
+            params.get(CONFIG_KEY_GROUP_ID) match {
+              case Some(groupId) =>
+                val progressIdxOpt = streamOpt.flatMap(streamToProgressIdx.get)
+                progressIdxOpt match {
+                  case Some(idx) =>
+                    val sourceProgress = event.progress.sources(idx)
+                    val tpToOffsets = inspector.partitionOffsets(sourceProgress.endOffset)
 
-              val kafkaConsumer = new KafkaConsumer[String, String](newParams.asJava)
-              try {
-                val offsetsToCommit = tpToOffsets.map { case (tp, offset) =>
-                  (tp -> new OffsetAndMetadata(offset))
+                    val newParams = new scala.collection.mutable.HashMap[String, Object]
+                    newParams ++= params
+                    newParams += "group.id" -> groupId
+
+                    val kafkaConsumer = new KafkaConsumer[String, String](newParams.asJava)
+                    try {
+                      val offsetsToCommit = tpToOffsets.map { case (tp, offset) =>
+                        tp -> new OffsetAndMetadata(offset)
+                      }
+                      kafkaConsumer.commitSync(offsetsToCommit.asJava, Duration.ofSeconds(10))
+                    } finally {
+                      kafkaConsumer.close()
+                    }
+
+                  case None =>
+                    logWarning("Could not match a Kafka plan leaf with group id " +
+                      s"'$groupId' to any streaming source in query ${event.progress.id}; " +
+                      "offsets will not be committed for this leaf.")
                 }
-                kafkaConsumer.commitSync(offsetsToCommit.asJava, Duration.ofSeconds(10))
-              } finally {
-                kafkaConsumer.close()
-              }
 
-            case None =>
+              case None =>
+            }
           }
         }
       }
@@ -81,6 +108,6 @@ class KafkaOffsetCommitterListener extends StreamingQueryListener with Logging {
 }
 
 object KafkaOffsetCommitterListener {
-  val CONFIG_KEY_GROUP_ID = "consumer.commit.groupid"
-  val CONFIG_KEY_GROUP_ID_DATA_SOURCE_OPTION = "kafka." + CONFIG_KEY_GROUP_ID
+  private val CONFIG_KEY_GROUP_ID = "consumer.commit.groupid"
+  val CONFIG_KEY_GROUP_ID_DATA_SOURCE_OPTION: String = "kafka." + CONFIG_KEY_GROUP_ID
 }

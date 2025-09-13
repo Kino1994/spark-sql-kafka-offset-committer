@@ -22,15 +22,31 @@ import net.heartsavior.spark.ReflectionHelper
 import org.apache.kafka.common.TopicPartition
 
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.connector.read.streaming.SparkDataStream
 import org.apache.spark.sql.execution.{RDDScanExec, RowDataSourceScanExec, SparkPlan}
-import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDDPartition, DataSourceV2ScanExecBase}
+import org.apache.spark.sql.execution.datasources.v2.{ContinuousScanExec, DataSourceRDDPartition, DataSourceV2ScanExecBase, MicroBatchScanExec}
 import org.apache.spark.sql.kafka010.{JsonUtils => KafkaJsonUtils}
 import org.apache.spark.sql.sources.BaseRelation
 
 
 class KafkaSourceInspector(sparkPlan: SparkPlan) {
-  def populateKafkaParams: Map[Int, Map[String, Object]] = {
-    sparkPlan.collectLeaves().zipWithIndex.flatMap { case (plan, idx) =>
+  /**
+   * Returns Kafka params for each Kafka source leaf in the executed plan, paired with the
+   * [[SparkDataStream]] that the leaf reads from (when the leaf is a streaming scan).
+   *
+   * The stream identity is what allows the listener to map a leaf back to the correct entry
+   * in `StreamingQueryProgress.sources` — relying on the position of the leaf inside
+   * `executedPlan.collectLeaves()` is unsafe, because Spark's micro-batch execution only
+   * emits scans for the sources that have new data in the current batch, while
+   * `StreamingQueryProgress.sources` always lists every source in the query.
+   *
+   * On Spark 3.3–3.5 the `SparkDataStream` is recovered by a typed pattern match against
+   * `MicroBatchScanExec` and `ContinuousScanExec`, both of which expose a public `stream`
+   * accessor. Spark 4.0 introduced a unified `StreamSourceAwareSparkPlan` trait for the
+   * same purpose, but it is not available in this Spark version, so we cannot use it here.
+   */
+  def populateKafkaParams: Seq[(Option[SparkDataStream], Map[String, Object])] = {
+    sparkPlan.collectLeaves().flatMap { plan =>
       val paramsOpt = plan match {
         case r: RowDataSourceScanExec if isKafkaRelation(r.relation) =>
           extractKafkaParamsFromKafkaRelation(r.relation)
@@ -40,17 +56,20 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
           extractSourceTopicsFromDataSourceV2(r)
         case _ => None
       }
-      if (paramsOpt.isDefined) {
-        Some((idx, paramsOpt.get))
-      } else {
-        None
+      paramsOpt.map { params =>
+        val streamOpt: Option[SparkDataStream] = plan match {
+          case mbse: MicroBatchScanExec => Option(mbse.stream)
+          case cse: ContinuousScanExec => Option(cse.stream)
+          case _ => None
+        }
+        (streamOpt, params)
       }
-    }.map(elem => elem._1 -> elem._2).toMap
+    }
   }
 
   private def isKafkaRelation(rel: BaseRelation): Boolean = {
     rel match {
-      case r: KafkaRelation => true
+      case _: KafkaRelation => true
       case _ => false
     }
   }
@@ -63,11 +82,6 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
   }
 
   private def extractKafkaParamsFromDataSourceV1(r: RDDScanExec): Option[Map[String, Object]] = {
-    extractKafkaParamsFromDataSourceV1(r.rdd)
-  }
-
-  def extractKafkaParamsFromDataSourceV1(r: RowDataSourceScanExec)
-      : Option[Map[String, Object]] = {
     extractKafkaParamsFromDataSourceV1(r.rdd)
   }
 
@@ -105,19 +119,21 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
     map.map(_.asScala.toMap).orElse(None)
   }
 
-  def extractSourceTopicsFromDataSourceV2(
-      r: DataSourceV2ScanExecBase): Option[Map[String, Object]] = {
-    r.inputRDDs().flatMap { rdd =>
+  private def extractSourceTopicsFromDataSourceV2(r: DataSourceV2ScanExecBase): Option[Map[String, Object]] = {
+    val mapsList: Seq[Map[String, Object]] = r.inputRDDs().flatMap { rdd =>
       rdd.partitions.flatMap {
-        case e: DataSourceRDDPartition => e.inputPartition match {
-          case part: KafkaBatchInputPartition =>
-            Some(part.executorKafkaParams.asScala.toMap)
-          case part: KafkaContinuousInputPartition =>
-            Some(part.kafkaParams.asScala.toMap)
-          case _ => None
-        }
+        case e: DataSourceRDDPartition =>
+          e.inputPartitions.collect {
+            case part: KafkaBatchInputPartition =>
+              part.executorKafkaParams.asScala.toMap
+            case part: KafkaContinuousInputPartition =>
+              part.kafkaParams.asScala.toMap
+            case _ => Map.empty[String, Object]
+          }
       }
-    }.headOption
+    }
+    val combinedMap = mapsList.foldLeft(Map.empty[String, Object])(_ ++ _)
+    if (combinedMap.nonEmpty) Some(combinedMap) else None
   }
 
   def partitionOffsets(str: String): Map[TopicPartition, Long] = {
