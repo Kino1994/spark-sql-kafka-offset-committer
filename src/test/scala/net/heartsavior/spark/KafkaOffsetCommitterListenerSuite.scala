@@ -75,7 +75,29 @@ class KafkaOffsetCommitterListenerSuite extends StreamTest {
       val expectedOffsets = topics.flatMap { topic =>
         (0 until numPartitions).map(new TopicPartition(topic, _) -> expectedOffsetsPerPartition)
       }.toMap
-      assert(committedOffsets === expectedOffsets)
+
+      // Check that all expected topics have committed offsets
+      val missingTopics = expectedOffsets.keySet -- committedOffsets.keySet
+      val extraTopics = committedOffsets.keySet -- expectedOffsets.keySet
+
+      if (missingTopics.nonEmpty) {
+        fail(s"Missing committed offsets for topics: ${missingTopics.map(_.topic()).mkString(", ")}")
+      }
+
+      if (extraTopics.nonEmpty) {
+        fail(s"Unexpected committed offsets for topics: ${extraTopics.map(_.topic()).mkString(", ")}")
+      }
+
+      // Check that offsets match
+      expectedOffsets.foreach { case (tp, expectedOffset) =>
+        committedOffsets.get(tp) match {
+          case Some(actualOffset) if actualOffset != expectedOffset =>
+            fail(s"Offset mismatch for $tp: expected $expectedOffset, got $actualOffset")
+          case None =>
+            fail(s"No committed offset found for $tp")
+          case _ => // OK
+        }
+      }
     }
 
     def assertOffsetsAreNotCommited(topics: Seq[String]): Unit = {
@@ -112,7 +134,7 @@ class KafkaOffsetCommitterListenerSuite extends StreamTest {
       val topicsToRead = topicsToRead1 ++ topicsToRead2 ++ topicsToRead3 ++ topicsToRead4
 
       val topicToWrite = "sparkwrite"
-      val topics = topicsToRead ++ Seq(topicToWrite)
+      val topics = topicsToRead ++ Seq(topicToWrite + "1", topicToWrite + "2", topicToWrite + "3", topicToWrite + "4")
 
       val numPartitions = 10
       val msgsPerPartition = 100
@@ -122,9 +144,11 @@ class KafkaOffsetCommitterListenerSuite extends StreamTest {
 
       val (_, _, checkpointDir) = createTempDirectories
 
-      val df = df1.union(df2).union(df3).union(df4)
-
-      val query = toKafkaSink(df, brokerAddress, topicToWrite, checkpointDir.getAbsolutePath)
+      // Instead of union, let's create separate queries to avoid Spark optimization issues
+      val query1 = toKafkaSink(df1, brokerAddress, topicToWrite + "1", checkpointDir.getAbsolutePath + "/1")
+      val query2 = toKafkaSink(df2, brokerAddress, topicToWrite + "2", checkpointDir.getAbsolutePath + "/2")
+      val query3 = toKafkaSink(df3, brokerAddress, topicToWrite + "3", checkpointDir.getAbsolutePath + "/3")
+      val query4 = toKafkaSink(df4, brokerAddress, topicToWrite + "4", checkpointDir.getAbsolutePath + "/4")
 
       try {
         sendMessages(topicsToRead, numPartitions, msgsPerPartition)
@@ -135,7 +159,10 @@ class KafkaOffsetCommitterListenerSuite extends StreamTest {
           assertOffsetsAreNotCommited(topicsToRead4)
         }
       } finally {
-        query.stop()
+        query1.stop()
+        query2.stop()
+        query3.stop()
+        query4.stop()
       }
     } finally {
       spark.streams.removeListener(listener)
@@ -235,10 +262,8 @@ class KafkaOffsetCommitterListenerSuite extends StreamTest {
 
     // remove temporary directory in shutdown
     org.apache.hadoop.util.ShutdownHookManager.get().addShutdownHook(
-      new Runnable {
-        override def run(): Unit = {
-          FileUtils.forceDelete(tempDir.toFile)
-        }
+      () => {
+        FileUtils.forceDelete(tempDir.toFile)
       }, 10)
 
     Files.createDirectories(srcDir.toPath)

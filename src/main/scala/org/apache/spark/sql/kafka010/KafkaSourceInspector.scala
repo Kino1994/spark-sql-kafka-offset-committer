@@ -50,7 +50,7 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
 
   private def isKafkaRelation(rel: BaseRelation): Boolean = {
     rel match {
-      case r: KafkaRelation => true
+      case _: KafkaRelation => true
       case _ => false
     }
   }
@@ -63,11 +63,6 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
   }
 
   private def extractKafkaParamsFromDataSourceV1(r: RDDScanExec): Option[Map[String, Object]] = {
-    extractKafkaParamsFromDataSourceV1(r.rdd)
-  }
-
-  def extractKafkaParamsFromDataSourceV1(r: RowDataSourceScanExec)
-      : Option[Map[String, Object]] = {
     extractKafkaParamsFromDataSourceV1(r.rdd)
   }
 
@@ -105,19 +100,21 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
     map.map(_.asScala.toMap).orElse(None)
   }
 
-  def extractSourceTopicsFromDataSourceV2(
-      r: DataSourceV2ScanExecBase): Option[Map[String, Object]] = {
-    r.inputRDDs().flatMap { rdd =>
+  private def extractSourceTopicsFromDataSourceV2(r: DataSourceV2ScanExecBase): Option[Map[String, Object]] = {
+    val mapsList: Seq[Map[String, Object]] = r.inputRDDs().flatMap { rdd =>
       rdd.partitions.flatMap {
-        case e: DataSourceRDDPartition => e.inputPartition match {
-          case part: KafkaBatchInputPartition =>
-            Some(part.executorKafkaParams.asScala.toMap)
-          case part: KafkaContinuousInputPartition =>
-            Some(part.kafkaParams.asScala.toMap)
-          case _ => None
-        }
+        case e: DataSourceRDDPartition =>
+          e.inputPartitions.collect {
+            case part: KafkaBatchInputPartition =>
+              part.executorKafkaParams.asScala.toMap
+            case part: KafkaContinuousInputPartition =>
+              part.kafkaParams.asScala.toMap
+            case _ => Map.empty[String, Object]
+          }
       }
-    }.headOption
+    }
+    val combinedMap = mapsList.foldLeft(Map.empty[String, Object])(_ ++ _)
+    if (combinedMap.nonEmpty) Some(combinedMap) else None
   }
 
   def partitionOffsets(str: String): Map[TopicPartition, Long] = {

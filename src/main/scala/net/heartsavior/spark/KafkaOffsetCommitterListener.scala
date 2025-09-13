@@ -61,7 +61,7 @@ class KafkaOffsetCommitterListener extends StreamingQueryListener with Logging {
               val kafkaConsumer = new KafkaConsumer[String, String](newParams.asJava)
               try {
                 val offsetsToCommit = tpToOffsets.map { case (tp, offset) =>
-                  (tp -> new OffsetAndMetadata(offset))
+                  tp -> new OffsetAndMetadata(offset)
                 }
                 kafkaConsumer.commitSync(offsetsToCommit.asJava, Duration.ofSeconds(10))
               } finally {
@@ -81,6 +81,6 @@ class KafkaOffsetCommitterListener extends StreamingQueryListener with Logging {
 }
 
 object KafkaOffsetCommitterListener {
-  val CONFIG_KEY_GROUP_ID = "consumer.commit.groupid"
-  val CONFIG_KEY_GROUP_ID_DATA_SOURCE_OPTION = "kafka." + CONFIG_KEY_GROUP_ID
+  private val CONFIG_KEY_GROUP_ID = "consumer.commit.groupid"
+  val CONFIG_KEY_GROUP_ID_DATA_SOURCE_OPTION: String = "kafka." + CONFIG_KEY_GROUP_ID
 }

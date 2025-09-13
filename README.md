@@ -10,14 +10,7 @@ This project is inspired by [SPARK-27549](https://issues.apache.org/jira/browse/
 
 ## Supported versions
 
-Both Spark 3.0.x and 2.4.x is supported: it only means you should use these versions when using this project.
-
-The project provides cross-compile for Scala 2.11 and 2.12 (thanks [@redsk](https://github.com/redsk)!) for Spark 2.4.x; please pick the right artifact for your Scala version.
-
-Spark version | Scala versions | artifact version
-------------- | -------------- | ----------------
-2.4.x         | 2.11 / 2.12    | 0.4.0-spark-2.4
-3.0.x         | 2.12           | 0.4.0-spark-3.0
+Spark 3 is supported. The project is compiled for Scala 2.12
 
 ## How to import
 
@@ -28,12 +21,12 @@ Please replace `{{...}}` with content in above matrix:
 ```
 <dependency>
   <groupId>net.heartsavior.spark</groupId>
-  <artifactId>spark-sql-kafka-offset-committer_{{scala_version}}</artifactId>
+  <artifactId>spark-sql-kafka-offset-committer</artifactId>
   <version>{{artifact_version}}</version>
 </dependency>
 ```
 
-You can dynamically include jar file while submitting, via leveraging `--packages` option. `--packages net.heartsavior.spark:spark-sql-kafka-offset-committer:0.1.0`. You may want to add `--conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener` as well, since you're dynamically adding the jar, hence the class is not accessible in your uber jar.
+You can dynamically include jar file while submitting, via leveraging `--packages` option. `--packages net.heartsavior.spark:spark-sql-kafka-offset-committer:1.0.0`. You may want to add `--conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener` as well, since you're dynamically adding the jar, hence the class is not accessible in your uber jar.
 
 ## How to use
 
@@ -74,7 +67,7 @@ Here's an example of command to run spark-shell with kafka committer listener be
 > command
 
 ```
-./bin/spark-shell --master "local[3]" --packages org.apache.spark:spark-sql-kafka-0-10_2.11:2.4.3 --jars ./spark-sql-kafka-offset-committer-0.1.0-SNAPSHOT.jar --conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener
+./bin/spark-shell --master "local[3]" --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.2 --jars ./spark-sql-kafka-offset-committer-1.0.0-SNAPSHOT.jar --conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener
 ```
 
 > query
