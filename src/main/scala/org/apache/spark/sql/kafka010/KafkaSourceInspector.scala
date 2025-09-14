@@ -16,15 +16,15 @@
 
 package org.apache.spark.sql.kafka010
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import net.heartsavior.spark.ReflectionHelper
 import org.apache.kafka.common.TopicPartition
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.connector.read.streaming.SparkDataStream
-import org.apache.spark.sql.execution.{RDDScanExec, RowDataSourceScanExec, SparkPlan}
-import org.apache.spark.sql.execution.datasources.v2.{ContinuousScanExec, DataSourceRDDPartition, DataSourceV2ScanExecBase, MicroBatchScanExec}
+import org.apache.spark.sql.execution.{RDDScanExec, RowDataSourceScanExec, SparkPlan, StreamSourceAwareSparkPlan}
+import org.apache.spark.sql.execution.datasources.v2.{ContinuousScanExec, DataSourceRDDPartition, DataSourceV2ScanExecBase}
 import org.apache.spark.sql.kafka010.{JsonUtils => KafkaJsonUtils}
 import org.apache.spark.sql.sources.BaseRelation
 
@@ -40,10 +40,14 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
    * emits scans for the sources that have new data in the current batch, while
    * `StreamingQueryProgress.sources` always lists every source in the query.
    *
-   * On Spark 3.3–3.5 the `SparkDataStream` is recovered by a typed pattern match against
-   * `MicroBatchScanExec` and `ContinuousScanExec`, both of which expose a public `stream`
-   * accessor. Spark 4.0 introduced a unified `StreamSourceAwareSparkPlan` trait for the
-   * same purpose, but it is not available in this Spark version, so we cannot use it here.
+   * Spark 4.0 introduced `StreamSourceAwareSparkPlan` as the public way for external code to
+   * recover the [[SparkDataStream]] of a streaming scan, and `MicroBatchScanExec` implements
+   * it. We use that trait first because it is the supported public API for this purpose.
+   * `ContinuousScanExec` does not implement the trait (still the case in 4.0.x), so it is
+   * still handled with a separate pattern-match case against its public `stream` accessor.
+   * In earlier 1.x releases of this library, which target Spark 3.3–3.5, the trait did not
+   * exist yet and a typed match against `MicroBatchScanExec`/`ContinuousScanExec` was used
+   * for both branches.
    */
   def populateKafkaParams: Seq[(Option[SparkDataStream], Map[String, Object])] = {
     sparkPlan.collectLeaves().flatMap { plan =>
@@ -58,7 +62,7 @@ class KafkaSourceInspector(sparkPlan: SparkPlan) {
       }
       paramsOpt.map { params =>
         val streamOpt: Option[SparkDataStream] = plan match {
-          case mbse: MicroBatchScanExec => Option(mbse.stream)
+          case ssa: StreamSourceAwareSparkPlan => ssa.getStream
           case cse: ContinuousScanExec => Option(cse.stream)
           case _ => None
         }
