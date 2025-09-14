@@ -18,7 +18,7 @@ package net.heartsavior.spark
 
 import java.time.Duration
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.kafka.clients.consumer.{KafkaConsumer, OffsetAndMetadata}
 

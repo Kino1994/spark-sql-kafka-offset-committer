@@ -10,7 +10,7 @@ This project is inspired by [SPARK-27549](https://issues.apache.org/jira/browse/
 
 ## Supported versions
 
-Spark 3 is supported. The project is compiled for Scala 2.12
+Spark 4 is supported. The project is compiled for Scala 2.13
 
 ## How to import
 
@@ -26,7 +26,7 @@ Please replace `{{...}}` with content in above matrix:
 </dependency>
 ```
 
-You can dynamically include jar file while submitting, via leveraging `--packages` option. `--packages net.heartsavior.spark:spark-sql-kafka-offset-committer:1.2.2`. You may want to add `--conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener` as well, since you're dynamically adding the jar, hence the class is not accessible in your uber jar.
+You can dynamically include jar file while submitting, via leveraging `--packages` option. `--packages net.heartsavior.spark:spark-sql-kafka-offset-committer:2.0.0`. You may want to add `--conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener` as well, since you're dynamically adding the jar, hence the class is not accessible in your uber jar.
 
 ## How to use
 
@@ -67,7 +67,7 @@ Here's an example of command to run spark-shell with kafka committer listener be
 > command
 
 ```
-./bin/spark-shell --master "local[3]" --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6 --jars ./spark-sql-kafka-offset-committer-1.2.2-SNAPSHOT.jar --conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener
+./bin/spark-shell --master "local[3]" --packages org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.0 --jars ./spark-sql-kafka-offset-committer-2.0.0.jar --conf spark.sql.streaming.streamingQueryListeners=net.heartsavior.spark.KafkaOffsetCommitterListener
 ```
 
 > query
